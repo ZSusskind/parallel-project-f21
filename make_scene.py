@@ -79,7 +79,7 @@ def make_triangle(target_area, is_foreground):
 num_triangles = int(sys.argv[1])
 out_fname = sys.argv[2]
 
-triangles = [make_triangle(0.05, False).flatten().tolist() for i in range(num_triangles)]
+triangles = [make_triangle((0.06*random())+0.02, False).flatten().tolist() for i in range(num_triangles)]
 triangles.append(make_triangle(0.5, True).flatten().tolist()) # Occluding body
 out_str = "\n".join(",".join(str(v) for v in t) for t in triangles)
 with open(out_fname, "w") as f:
