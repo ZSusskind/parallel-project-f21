@@ -67,6 +67,13 @@ def make_triangle(target_area, is_foreground):
     coordinates += np.array([x_translate, y_translate, z_translate])
     assert(math.isclose(np.linalg.norm(np.cross(coordinates[1]-coordinates[0], coordinates[2]-coordinates[0]))/2, target_area))
 
+    # Ensure the coordinates are in "clockwise" order to fix the orientation of the normal
+    normal = np.cross(coordinates[1]-coordinates[0], coordinates[2]-coordinates[0])
+    if normal[2] > 0:
+        coordinates = np.asarray([coordinates[0], coordinates[2], coordinates[1]])
+    assert(math.isclose(np.linalg.norm(np.cross(coordinates[1]-coordinates[0], coordinates[2]-coordinates[0]))/2, target_area))
+    assert(np.cross(coordinates[1]-coordinates[0], coordinates[2]-coordinates[0])[2] <= 0)
+
     return coordinates
 
 num_triangles = int(sys.argv[1])
