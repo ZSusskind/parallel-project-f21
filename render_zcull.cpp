@@ -100,9 +100,9 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf) {
                 // Atomic compare and swap if less than
                 bool done = false;
                 do {
-                    coord_t current = zbuf[y][x]->load();
+                    coord_t current = zbuf[y_res - 1 - y][x]->load();
                     if (depth < current) {
-                        done = zbuf[y][x]->compare_exchange_weak(current, depth);
+                        done = zbuf[y_res - 1 - y][x]->compare_exchange_weak(current, depth);
                     } else {
                         done = true;
                     }
