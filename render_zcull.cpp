@@ -35,7 +35,7 @@ struct Triangle {
     }
     template <typename T>
     Triangle operator*(std::array<T,3> i) const {
-        return Triangle {this->v0*i[0], this->v1*i[1], this->v2*i[2]};
+        return Triangle {this->v0*i, this->v1*i, this->v2*i};
     }
 };
 
