@@ -21,7 +21,7 @@ struct Vertex {
         return Vertex {this->x*i, this->y*i, this->z*i};
     }
     template <typename T>
-    Vertex operator*(std::array<T,3> i) const {
+    Vertex operator*(std::array<T,3> &i) const {
         return Vertex {this->x*i[0], this->y*i[1], this->z*i[2]};
     }
 };
@@ -34,7 +34,7 @@ struct Triangle {
         return Triangle {this->v0*i, this->v1*i, this->v2*i};
     }
     template <typename T>
-    Triangle operator*(std::array<T,3> i) const {
+    Triangle operator*(std::array<T,3> &i) const {
         return Triangle {this->v0*i[0], this->v1*i[1], this->v2*i[2]};
     }
 };
