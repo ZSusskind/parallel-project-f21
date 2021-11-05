@@ -1,5 +1,5 @@
 CXX := /usr/bin/g++
-CXX_FLAGS := -std=c++17 -Wall -Wextra
+CXX_FLAGS := -std=c++17 -Wall -Wextra -O3
 LIB_FLAGS := -fopenmp
 
 OBJS := $(subst .cpp,,$(wildcard *.cpp))

@@ -9,9 +9,16 @@
 #include <sstream>
 #include <memory>
 #include <cstdint>
+#include <ctime>
 #include <omp.h>
 
 typedef float coord_t;
+
+enum raster_mode_t {
+    NAIVE,
+    BOUNDING_BOX,
+    INTERPOLATED
+};
 
 struct Vertex {
     coord_t x, y, z;
@@ -35,7 +42,7 @@ struct Triangle {
     }
     template <typename T>
     Triangle operator*(std::array<T,3> &i) const {
-        return Triangle {this->v0*i[0], this->v1*i[1], this->v2*i[2]};
+        return Triangle {this->v0*i, this->v1*i, this->v2*i};
     }
 };
 
@@ -50,9 +57,43 @@ coord_t edgeFunction(const Vertex a, const Vertex b, const Vertex c) {
     return ((c.x-a.x)*(b.y-a.y) - (c.y-a.y)*(b.x-a.x));
 }
 
+bool rasterize_pixel(
+    const Triangle &raster_tri, buffer_t &zbuf,
+    coord_t twice_area, coord_t z0, coord_t z0_z1_delta, coord_t z0_z2_delta,
+    int32_t x, int32_t y
+) {
+    Vertex point {(coord_t)x, (coord_t)y, 0};
+    // These three edge functions partition the plane along three lines
+    // If a point is to the left of a line, the corresponding edge function will evaluate negative
+    // If the point is on or to the right of the line, the edge function will be >= 0
+    // Since vertices are defined clockwise, a point is inside the triangle iff all functions evaluate positive
+    coord_t w0 = edgeFunction(raster_tri.v1, raster_tri.v2, point);
+    coord_t w1 = edgeFunction(raster_tri.v2, raster_tri.v0, point);
+    coord_t w2 = edgeFunction(raster_tri.v0, raster_tri.v1, point);
+    bool in_bounds = (w0 >= 0) && (w1 >= 0) && (w2 >= 0);
+    if (in_bounds) { // Point is inside the triangle
+        // w0, w1, and w2 are denormalized, but their normalized values sum to 1
+        // We can exploit this to simplify the depth calculation (w0*z0 + w1*z1 + w2*z2) by eliminating w0
+        coord_t norm_w1 = w1 / twice_area;
+        coord_t norm_w2 = w2 / twice_area;
+        coord_t depth = z0 + norm_w1*z0_z1_delta + norm_w2*z0_z2_delta;
+        // Atomic compare and swap if less than
+        bool done = false;
+        do {
+            coord_t current = zbuf[y][x]->load();
+            if (depth < current) {
+                done = zbuf[y][x]->compare_exchange_weak(current, depth);
+            } else {
+                done = true;
+            }
+        } while (!done);
+    }
+    return in_bounds;
+}
+
 // Adaptation of the rasterization technique discussed in "A Parallel Algorithm for Polygon Rasterization", Juan Pineda, 1988
 // Note that despite the name, this is a sequential implementation - the very fine-grain parallelism is likely to be dominated by overhead on a CPU
-void rasterize_triangle(const Triangle &tri, buffer_t &zbuf) {
+void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode) {
     const size_t y_res = zbuf.size();
     const size_t x_res = zbuf[0].size();
     
@@ -69,50 +110,141 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf) {
     //  This is twice the area of the raster triangle
     coord_t twice_area = edgeFunction(raster_tri.v0, raster_tri.v1, raster_tri.v2);
 
-    // Get a 2D bounding box for the triangle; this is a quick way to reduce the search space
-    // TODO: There are better techniques than a bounding box; see the center line algorithm in the paper (Fig. 5)
-    int32_t x_min = std::min({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
-    x_min = std::clamp(x_min, 0, (int32_t)(x_res-1));
-    int32_t x_max = std::max({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
-    x_max = std::clamp(x_max, 0, (int32_t)(x_res-1));
-    int32_t y_min = std::min({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
-    y_min = std::clamp(y_min, 0, (int32_t)(y_res-1));
-    int32_t y_max = std::max({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
-    y_max = std::clamp(y_max, 0, (int32_t)(y_res-1));
-
-    // Test membership in the triangle for each pixel in the bounding box
-    for (int32_t x = x_min; x <= x_max; x++) {
-        for (int32_t y = y_min; y <= y_max; y++) {
-            Vertex point {(coord_t)x, (coord_t)y, 0};
-            // These three edge functions partition the plane along three lines
-            // If a point is to the left of a line, the corresponding edge function will evaluate negative
-            // If the point is on or to the right of the line, the edge function will be >= 0
-            // Since vertices are defined clockwise, a point is inside the triangle iff all functions evaluate positive
-            coord_t w0 = edgeFunction(raster_tri.v1, raster_tri.v2, point);
-            coord_t w1 = edgeFunction(raster_tri.v2, raster_tri.v0, point);
-            coord_t w2 = edgeFunction(raster_tri.v0, raster_tri.v1, point);
-            if ((w0 >= 0) && (w1 >= 0) && (w2 >= 0)) { // Point is inside the triangle
-                // w0, w1, and w2 are denormalized, but their normalized values sum to 1
-                // We can exploit this to simplify the depth calculation (w0*z0 + w1*z1 + w2*z2) by eliminating w0
-                coord_t norm_w1 = w1 / twice_area;
-                coord_t norm_w2 = w2 / twice_area;
-                coord_t depth = z0 + norm_w1*z0_z1_delta + norm_w2*z0_z2_delta;
-                // Atomic compare and swap if less than
-                bool done = false;
-                do {
-                    coord_t current = zbuf[y_res - 1 - y][x]->load();
-                    if (depth < current) {
-                        done = zbuf[y_res - 1 - y][x]->compare_exchange_weak(current, depth);
-                    } else {
-                        done = true;
-                    }
-                } while (!done);
+    switch(mode) {
+    case NAIVE: {
+        // The simplest form of rasterization, where we check every pixel for membership
+        for (uint32_t x = 0; x < x_res; x++) {
+            for (uint32_t y = 0; y < y_res; y++) {
+                rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, y);
             }
         }
+        break;
+    }
+    case BOUNDING_BOX: {
+        // Get a 2D bounding box for the triangle; this is a quick way to reduce the search space
+        int32_t x_min = std::min({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
+        x_min = std::clamp(x_min, 0, (int32_t)(x_res-1));
+        int32_t x_max = std::max({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
+        x_max = std::clamp(x_max, 0, (int32_t)(x_res-1));
+        int32_t y_min = std::min({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
+        y_min = std::clamp(y_min, 0, (int32_t)(y_res-1));
+        int32_t y_max = std::max({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
+        y_max = std::clamp(y_max, 0, (int32_t)(y_res-1));
+
+        // Test membership in the triangle for each pixel in the bounding box
+        for (int32_t x = x_min; x <= x_max; x++) {
+            for (int32_t y = y_min; y <= y_max; y++) {
+                rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, y);
+            }
+        }
+        break;
+    }
+    case INTERPOLATED: {
+        // Branch out from a central vertical line
+        
+        // Get a 2D bounding box to limit the search space
+        int32_t x_min = std::min({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
+        x_min = std::clamp(x_min, 0, (int32_t)(x_res-1));
+        int32_t x_max = std::max({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
+        x_max = std::clamp(x_max, 0, (int32_t)(x_res-1));
+        int32_t y_min = std::min({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
+        y_min = std::clamp(y_min, 0, (int32_t)(y_res-1));
+        int32_t y_max = std::max({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
+        y_max = std::clamp(y_max, 0, (int32_t)(y_res-1));
+
+        bool found_first = false;
+        bool swept = false;
+        bool sweep_right;
+        int32_t anchor_x, anchor_y;
+        // Find the leftmost pixel on the first row with pixels
+        for (anchor_y = y_min; anchor_y <= y_max; anchor_y++) {
+            for (anchor_x = x_min; anchor_x <= x_max; anchor_x++) {
+                if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y)) {
+                    found_first = true;
+                }
+                if (found_first) break;
+            }
+            if (found_first) break;
+        }
+        if (!found_first) break; // Volume is empty??
+
+        for (; anchor_y <= y_max; anchor_y++) {
+            bool row_empty = false;
+            if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y)) {
+                // Find the new anchor point
+                if (!swept) { // This is the first time we've gone out of bounds
+                    for (int32_t offset = 1;; offset++) {
+                        if ((anchor_x-offset < x_min) && (anchor_x+offset > x_max)) {
+                            row_empty = true;
+                            break;
+                        }
+                        if (anchor_x-offset >= x_min) {
+                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x-offset, anchor_y)) { // Test left
+                                anchor_x -= offset;
+                                swept = true;
+                                sweep_right = false;
+                                break;
+                            }
+                        }
+                        if (anchor_x+offset <= x_max) {
+                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x+offset, anchor_y)) { // Test right
+                                anchor_x += offset;
+                                swept = true;
+                                sweep_right = true;
+                                break;
+                            }
+                        }
+                    }
+                } else { // We've gone out of bounds before, and can just sweep in the same direction
+                    if (sweep_right) {
+                        while (anchor_x <= x_max) {
+                            if (anchor_x == x_max) {
+                                row_empty = true;
+                                anchor_x = x_min;
+                                break;
+                            }
+                            anchor_x++;
+                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y)) {
+                                break;
+                            }
+                        }
+                    } else {
+                        while (anchor_x >= x_min) {
+                            if (anchor_x == x_min) {
+                                row_empty = true;
+                                anchor_x = x_max;
+                                break;
+                            }
+                            anchor_x--;
+                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y)) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (row_empty) continue;
+            for (int32_t x = anchor_x-1; x >= x_min; x--) { // Sweep left from anchor point
+                if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, anchor_y)) {
+                    break;
+                }
+            }
+            for (int32_t x = anchor_x+1; x <= x_max; x++) { // Sweep right from anchor point
+                if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, anchor_y)) {
+                    break;
+                }
+            }
+        }
+
+        break;
+    }
+    default:
+        std::cerr << "Unrecognized raster mode" << std::endl;
+        exit(1);
     }
 }
 
-buffer_t rasterize_scene(std::vector<Triangle> tris, const size_t x_res, const size_t y_res, const size_t num_threads) {
+buffer_t rasterize_scene(std::vector<Triangle> tris, const size_t x_res, const size_t y_res, const size_t num_threads, raster_mode_t mode) {
     // Construct the z-buffer
     buffer_t zbuf;
     for (size_t y = 0; y < y_res; y++) {
@@ -125,10 +257,19 @@ buffer_t rasterize_scene(std::vector<Triangle> tris, const size_t x_res, const s
     }
     
     omp_set_num_threads(num_threads);
+    // This is the part we actually care about
+    timespec start_time, end_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
     #pragma omp parallel for
     for (auto &tri : tris) {
-        rasterize_triangle(tri, zbuf);
+        rasterize_triangle(tri, zbuf, mode);
     }
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    size_t start_ns = (start_time.tv_sec*1000000000ull) + start_time.tv_nsec;
+    size_t end_ns = (end_time.tv_sec*1000000000ull) + end_time.tv_nsec;
+    size_t elapsed_ns = end_ns - start_ns;
+    std::cout << "Elapsed time: " << (double)elapsed_ns/1000000 << "ms" << std::endl;
+    
 
     return zbuf;
 }
@@ -230,8 +371,8 @@ void save_bitmap(bitmap_data_t image, const char* fname) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 6) {
-        std::cerr << "Usage: " << argv[0] << " <Input .tri> <Output .bmp> <X resolution> <Y resolution> <# threads>" << std::endl;
+    if (argc != 7) {
+        std::cerr << "Usage: " << argv[0] << " <Input .tri> <Output .bmp> <X resolution> <Y resolution> <# threads> <raster mode 0-2>" << std::endl;
         return 1;
     }
 
@@ -241,6 +382,7 @@ int main(int argc, char **argv) {
     int x_res = atoi(argv[3]);
     int y_res = atoi(argv[4]);
     int num_threads = atoi(argv[5]);
+    raster_mode_t mode = (raster_mode_t)atoi(argv[6]);
 
     // 2. Parse triangle file
     std::ifstream infile(in_fname);
@@ -271,7 +413,7 @@ int main(int argc, char **argv) {
     }
 
     // 3. Rasterize triangles
-    buffer_t zbuf = rasterize_scene(tris, x_res, y_res, num_threads);
+    buffer_t zbuf = rasterize_scene(tris, x_res, y_res, num_threads, mode);
     /*
     for (size_t y = 0; y < y_res; y++) {
         for (size_t x = 0; x < x_res; x++) {

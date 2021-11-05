@@ -73,6 +73,6 @@ shaded = np.empty((resolution, resolution, 3), dtype=np.uint8)
 shaded = np.stack([(255*(1-scaled)).astype(np.uint8), np.zeros(scaled.shape, dtype=np.uint8), (255*scaled).astype(np.uint8)], axis=-1)
 shaded[zbuf == float("inf")] = (255,255,255)
 shaded[zbuf <= -100] = (127, 127, 127)
-plt.imshow(shaded, interpolation='nearest')
+plt.imshow(shaded, interpolation="nearest", origin="lower")
 plt.savefig(out_fname)
 
