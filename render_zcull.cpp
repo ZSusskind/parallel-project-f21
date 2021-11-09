@@ -62,7 +62,7 @@ coord_t edgeFunction(const Vertex a, const Vertex b, const Vertex c) {
 bool rasterize_pixel(
     const Triangle &raster_tri, buffer_t &zbuf,
     coord_t twice_area, coord_t z0, coord_t z0_z1_delta, coord_t z0_z2_delta,
-    int32_t x, int32_t y, s_buffer &OM
+    int32_t x, int32_t y, s_buffer &OM, bool update_hom
 ) {
     const size_t y_res = zbuf.size();
     const size_t x_res = zbuf[0].size();
@@ -87,7 +87,8 @@ bool rasterize_pixel(
             coord_t current = zbuf[y][x]->load();
             if (depth < current) {
                 done = zbuf[y][x]->compare_exchange_weak(current, depth);
-                OM[floor(((y*1.0)/y_res) * 256)][floor((x*1.0/x_res) * 256)] = 1;
+                if (update_hom)
+                    OM[floor(((y*1.0)/y_res) * 256)][floor((x*1.0/x_res) * 256)] = 1;
             } else {
                 done = true;
             }
@@ -98,7 +99,7 @@ bool rasterize_pixel(
 
 // Adaptation of the rasterization technique discussed in "A Parallel Algorithm for Polygon Rasterization", Juan Pineda, 1988
 // Note that despite the name, this is a sequential implementation - the very fine-grain parallelism is likely to be dominated by overhead on a CPU
-void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode, s_buffer &OM) {
+void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode, s_buffer &OM, bool update_hom) {
     const size_t y_res = zbuf.size();
     const size_t x_res = zbuf[0].size();
     
@@ -120,7 +121,7 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
         // The simplest form of rasterization, where we check every pixel for membership
         for (uint32_t x = 0; x < x_res; x++) {
             for (uint32_t y = 0; y < y_res; y++) {
-                rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, y, OM);
+                rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, y, OM, update_hom);
             }
         }
         break;
@@ -139,7 +140,7 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
         // Test membership in the triangle for each pixel in the bounding box
         for (int32_t x = x_min; x <= x_max; x++) {
             for (int32_t y = y_min; y <= y_max; y++) {
-                rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, y, OM);
+                rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, y, OM, update_hom);
             }
         }
         break;
@@ -164,7 +165,7 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
         // Find the leftmost pixel on the first row with pixels
         for (anchor_y = y_min; anchor_y <= y_max; anchor_y++) {
             for (anchor_x = x_min; anchor_x <= x_max; anchor_x++) {
-                if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y, OM)) {
+                if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y, OM, update_hom)) {
                     found_first = true;
                 }
                 if (found_first) break;
@@ -175,7 +176,7 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
 
         for (; anchor_y <= y_max; anchor_y++) {
             bool row_empty = false;
-            if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y, OM)) {
+            if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y, OM, update_hom)) {
                 // Find the new anchor point
                 if (!swept) { // This is the first time we've gone out of bounds
                     for (int32_t offset = 1;; offset++) {
@@ -184,7 +185,7 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
                             break;
                         }
                         if (anchor_x-offset >= x_min) {
-                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x-offset, anchor_y, OM)) { // Test left
+                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x-offset, anchor_y, OM, update_hom)) { // Test left
                                 anchor_x -= offset;
                                 swept = true;
                                 sweep_right = false;
@@ -192,7 +193,7 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
                             }
                         }
                         if (anchor_x+offset <= x_max) {
-                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x+offset, anchor_y, OM)) { // Test right
+                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x+offset, anchor_y, OM, update_hom)) { // Test right
                                 anchor_x += offset;
                                 swept = true;
                                 sweep_right = true;
@@ -209,7 +210,7 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
                                 break;
                             }
                             anchor_x++;
-                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y, OM)) {
+                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y, OM, update_hom)) {
                                 break;
                             }
                         }
@@ -221,7 +222,7 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
                                 break;
                             }
                             anchor_x--;
-                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y, OM)) {
+                            if (rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, anchor_x, anchor_y, OM, update_hom)) {
                                 break;
                             }
                         }
@@ -230,12 +231,12 @@ void rasterize_triangle(const Triangle &tri, buffer_t &zbuf, raster_mode_t mode,
             }
             if (row_empty) continue;
             for (int32_t x = anchor_x-1; x >= x_min; x--) { // Sweep left from anchor point
-                if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, anchor_y, OM)) {
+                if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, anchor_y, OM, update_hom)) {
                     break;
                 }
             }
             for (int32_t x = anchor_x+1; x <= x_max; x++) { // Sweep right from anchor point
-                if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, anchor_y, OM)) {
+                if (!rasterize_pixel(raster_tri, zbuf, twice_area, z0, z0_z1_delta, z0_z2_delta, x, anchor_y, OM, update_hom)) {
                     break;
                 }
             }
@@ -273,52 +274,69 @@ void generate_hom_levels(std::vector<s_buffer> &hom) {
     }
 }
 
-bool overlap_test(const Triangle &tri, std::vector<s_buffer> &hom) {
+bool overlap_test(const Triangle &tri, std::vector<s_buffer> &hom, int level) {
 
-    int st_ind = 4;
+    if (level < 0) return false;
 
-    for (int ind = st_ind; ind >= 0; ind--) {
+    const size_t y_res = hom[level].size();
+    const size_t x_res = hom[level][0].size();
 
-        const size_t y_res = hom[ind].size();
-        const size_t x_res = hom[ind][0].size();
+    std::array<size_t, 3> raster_scalar = {x_res, y_res, 1};
+    Triangle raster_tri = tri * raster_scalar;
 
-        std::array<size_t, 3> raster_scalar = {x_res, y_res, 1};
-        Triangle raster_tri = tri * raster_scalar;
+    // Create a bounding box and test for all the pixels in this box - conservative overlap test
+    int32_t x_min = std::min({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
+    x_min = std::clamp(x_min, 0, (int32_t)(x_res-1));
+    int32_t x_max = std::max({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
+    x_max = std::clamp(x_max, 0, (int32_t)(x_res-1));
+    int32_t y_min = std::min({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
+    y_min = std::clamp(y_min, 0, (int32_t)(y_res-1));
+    int32_t y_max = std::max({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
+    y_max = std::clamp(y_max, 0, (int32_t)(y_res-1));
 
-        int32_t x_min = std::min({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
-        x_min = std::clamp(x_min, 0, (int32_t)(x_res-1));
-        int32_t x_max = std::max({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
-        x_max = std::clamp(x_max, 0, (int32_t)(x_res-1));
-        int32_t y_min = std::min({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
-        y_min = std::clamp(y_min, 0, (int32_t)(y_res-1));
-        int32_t y_max = std::max({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
-        y_max = std::clamp(y_max, 0, (int32_t)(y_res-1));
-
-        s_buffer b = hom[ind];
-        bool res = true;
-        for (int32_t x = x_min; x <= x_max; x++) {
-            for (int32_t y = y_min; y <= y_max; y++) {
-                if (b[y][x] < 1) {
-                    res = false;
-                    break;
-                }
+    for (int32_t x = x_min; x <= x_max; x++) {
+        for (int32_t y = y_min; y <= y_max; y++) {
+            if (hom[level][y][x] < 1) {
+                return overlap_test(tri, hom, level - 1);
             }
-            if (!res) break;
         }
-
-        if(!res) continue;
-        return true;
     }
-    return false;
+    return true;
 }
 
-bool depth_test(const Triangle &tri, int curr_depth) {
+bool depth_test(const Triangle &tri, buffer_t &debuf) {
 
-    coord_t minz = std::min({tri.v0.z, tri.v1.z, tri.v2.z});
-    if(minz > curr_depth)
-        return true;
-    
-    return false;
+    const size_t y_res = 64;
+    const size_t x_res = 64;
+
+    std::array<size_t, 3> raster_scalar = {x_res, y_res, 1};
+    Triangle raster_tri = tri * raster_scalar;
+
+    // creates a bounding box and check if it lies behind any triangles rasterized as of now - conservative depth test
+    int32_t x_min = std::min({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
+    x_min = std::clamp(x_min, 0, (int32_t)(x_res-1));
+    int32_t x_max = std::max({raster_tri.v0.x, raster_tri.v1.x, raster_tri.v2.x});
+    x_max = std::clamp(x_max, 0, (int32_t)(x_res-1));
+    int32_t y_min = std::min({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
+    y_min = std::clamp(y_min, 0, (int32_t)(y_res-1));
+    int32_t y_max = std::max({raster_tri.v0.y, raster_tri.v1.y, raster_tri.v2.y});
+    y_max = std::clamp(y_max, 0, (int32_t)(y_res-1));
+
+    coord_t tri_depth = std::min({tri.v0.z, tri.v1.z, tri.v2.z});
+    for (int32_t x = x_min; x <= x_max; x++) {
+        for (int32_t y = y_min; y <= y_max; y++) {
+            coord_t z_val = debuf[y][x]->load();
+            if (z_val > tri_depth) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+void update_dbuf(const Triangle &tri, buffer_t dbuf, s_buffer &OM) {
+    rasterize_triangle(tri, dbuf, INTERPOLATED ,OM, false);
 }
 
 buffer_t rasterize_scene(std::vector<Triangle> tris, const size_t x_res, const size_t y_res, const size_t num_threads, raster_mode_t mode, bool hom_enabled) {
@@ -333,7 +351,7 @@ buffer_t rasterize_scene(std::vector<Triangle> tris, const size_t x_res, const s
         zbuf.push_back(row);
     }
 
-    // Construct HOM
+    // Construct HOM - 256x256
     std::vector<s_buffer> hom;
 
     for (size_t i = 256; i > 1; i /= 2){
@@ -348,56 +366,77 @@ buffer_t rasterize_scene(std::vector<Triangle> tris, const size_t x_res, const s
         hom.push_back(OM);
     }
     
+    // Construct depth buffer - 64x64
+    buffer_t dbuf;
+    for (size_t y = 0; y < 64; y++) {
+        std::vector<std::shared_ptr<std::atomic<coord_t> > > row;
+        for (size_t x = 0; x < 64; x++) {
+            std::atomic<coord_t> *obj = new std::atomic<coord_t> (std::numeric_limits<coord_t>::infinity());
+            row.push_back(std::shared_ptr<std::atomic<coord_t> > (obj));
+        }
+        dbuf.push_back(row);
+    }
+
+    coord_t max_z = -99;
+    coord_t min_z = std::numeric_limits<coord_t>::infinity();
+    Triangle tf;
+
+    // Max and Min Z values
+    for (auto &tri: tris) {
+        coord_t temp = std::max({tri.v0.z, tri.v1.z, tri.v2.z});
+        max_z = std::max({max_z, temp});
+        temp = std::min({tri.v0.z, tri.v1.z, tri.v2.z});
+        if (temp == -100) {
+            tf = tri;
+            continue;
+        }
+        min_z = std::min({min_z, temp});
+    }
+    
     omp_set_num_threads(num_threads);
     // This is the part we actually care about
     timespec start_time, end_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 
     if (hom_enabled) {
-        std::vector<Triangle> toProcess;
+        float bucket_width = 0.2;
+
+        // Init buckets
+        std::vector<std::vector<Triangle>> buckets;
+        for (coord_t i = min_z; i < max_z; i += bucket_width) {
+            std::vector<Triangle> row;
+            buckets.push_back(row);
+        }
+
+        // sort triangles into buckets 
+        for (auto &tri : tris) {
+            coord_t tmin = std::min({tri.v0.z, tri.v1.z, tri.v2.z});
+            int bucket = (int)(floor((tmin - min_z)/bucket_width));
+
+            if (tmin != -100)
+                buckets[bucket].push_back(tri);
+        }
+        buckets[0].push_back(tf);
+        
         int PO = 0;
-        coord_t curr_depth = 0;
-        int run = 0;
-        int count = 0;
-        while (tris.size() > 0){
-            for (long unsigned int i = 0; i < tris.size(); i++) {
-                Triangle tri = tris[i];
-                coord_t maxz = std::max({tri.v0.z, tri.v1.z, tri.v2.z});
-
-                if (maxz < (curr_depth + 0.2)) {
-                    toProcess.push_back(tri);
-                    tris.erase(tris.begin() + i);
-                }
-            }
-            if (!toProcess.size()) curr_depth += 0.2;
-
+        for (long unsigned int b = 0; b < buckets.size(); b++){
             #pragma omp parallel for
-            for (auto &tri : toProcess) {
-                bool ovt = run > 0 ? overlap_test(tri, hom) : false;
-                bool dpt = run > 0 ? depth_test(tri, curr_depth) : false;
-
-                if (!dpt || !ovt) {
-                    rasterize_triangle(tri, zbuf, mode, hom[0]);
-                    coord_t temp = std::max({tri.v0.z, tri.v1.z, tri.v2.z});
-                    curr_depth = std::max({curr_depth, temp});
+            for (auto &tri : buckets[b]) {
+                if (!overlap_test(tri, hom, 4) || !depth_test(tri, dbuf)) {
+                    rasterize_triangle(tri, zbuf, mode, hom[0], true);
+                    update_dbuf(tri, dbuf, hom[0]);
                     PO++;
-                    if (PO > 10) {
+                    if (PO > 20) {
                         generate_hom_levels(hom);
                         PO = 0;
                     }
-                } else {
-                    count++;
                 }
             }
-            run += 1;
-            toProcess.clear();
         }
-        std::cout << count << "\n";
-
     } else {
         #pragma omp parallel for
         for (auto &tri : tris) {
-            rasterize_triangle(tri, zbuf, mode, hom[0]);
+            rasterize_triangle(tri, zbuf, mode, hom[0], false);
         }
     }
 
