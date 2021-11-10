@@ -14,6 +14,7 @@ triangle_sizes = [1e-6, 1e-4, 1e-2]
 output_resolutions = [256, 512, 1024, 2048]
 cores = [1, 2, 4, 8, 16, 32, 64]
 raster_modes = [0, 1, 2]
+hom_enabled = [0, 1]
 
 def main(out_fname):
     print("Making input configurations")
@@ -28,18 +29,18 @@ def main(out_fname):
         make_scene(triangle_count, fname, seed, triangle_size, triangle_size)
 
     results = []
-    configurations = list(product(triangle_counts, triangle_sizes, output_resolutions, cores, raster_modes))
+    configurations = list(product(triangle_counts, triangle_sizes, output_resolutions, cores, raster_modes, hom_enabled))
     runtime_re = re.compile(r"Elapsed time: ([0-9\.]+)ms")
     for idx, config in enumerate(configurations):
-        triangle_count, triangle_size, output_resolution, core_count, raster_mode = config
+        triangle_count, triangle_size, output_resolution, core_count, raster_mode, hom = config
         input_fname = os.path.join("inputs", f"input_{triangle_count}_tris_{triangle_size}_avgsize.tri")
         output_fname = "/dev/null"
-        cmd = f"./render_zcull {input_fname} {output_fname} {output_resolution} {output_resolution} {core_count} {raster_mode}"
+        cmd = f"./render_zcull {input_fname} {output_fname} {output_resolution} {output_resolution} {core_count} {raster_mode} {hom}"
         print(f"Run {idx+1}/{len(configurations)}: {cmd}")
         timed_out = False
         try:
             proc = subprocess.run(
-                ["./render_zcull", input_fname, output_fname, str(output_resolution), str(output_resolution), str(core_count), str(raster_mode)],
+                ["./render_zcull", input_fname, output_fname, str(output_resolution), str(output_resolution), str(core_count), str(raster_mode), str(hom)],
                 timeout=300, check=True, stdout=subprocess.PIPE
             )
         except subprocess.TimeoutExpired:
@@ -55,8 +56,8 @@ def main(out_fname):
             runtime = float(match.group(1))
             print(f"Runtime of {runtime} ms")
         results.append(list(config) + [runtime])
-    df = pd.DataFrame(results, columns=["# Triangles", "Avg. Triangle Size", "Image Resolution", "CPUs", "Raster Mode", "Runtime (ms)"])
-    df.to_csv(out_fname)
+    df = pd.DataFrame(results, columns=["# Triangles", "Avg. Triangle Size", "Image Resolution", "CPUs", "Raster Mode", "HOM Enabled", "Runtime (ms)"])
+    df.to_csv(out_fname, index=False)
 
 if __name__ == "__main__":
     main(sys.argv[1])

@@ -95,7 +95,7 @@ def make_scene(background_triangles, out_fname, rand_seed=None, average_size=0.0
 
     triangles = make_triangles(background_triangles, average_size, size_range)
     triangle_list = [t.flatten().tolist() for t in triangles.reshape(-1, 9)]
-    triangle_list.append([0.15, 0.15, -100, 0.5, 0.85, -100, 0.85, 0.15, -100]) # Occluding body
+    #triangle_list.append([0.15, 0.15, -100, 0.5, 0.85, -100, 0.85, 0.15, -100]) # Occluding body -- no longer used since HOM picks these out automatically
     out_str = "\n".join(",".join(str(v) for v in t) for t in triangle_list)
     with open(out_fname, "w") as f:
         f.write(out_str)
