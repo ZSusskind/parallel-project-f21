@@ -43,23 +43,33 @@ for n in triangle_counts:
                     series_data[h][r][s][o] = [float(x) if x != "DNF" else float("nan") for x in runtime_data]
     plt.clf()
     fig, ax = plt.subplots(len(hom_enabled), len(raster_modes))
+    markers=[".","^","s",]
     for h in hom_enabled:
         for r in raster_modes:
             ax[h][r].set_title(f"{raster_mode_names[r]}; {hom_names[h]}") 
             ax[h][r].set_xlabel("# of CPUs") 
             ax[h][r].set_ylabel("Runtime (ms)") 
-            for s in triangle_sizes:
-                for o in output_resolutions:
+            for s_idx, s in enumerate(triangle_sizes):
+                for o_idx, o in enumerate(output_resolutions):
                     y_data = np.asarray(series_data[h][r][s][o])
                     x_values = x_data[np.where(~np.isnan(y_data))]
                     y_values = y_data[np.where(~np.isnan(y_data))]
-                    ax[h][r].plot(y_data, label=f"{o}x{o}, size={s}")
+                    color_r = s_idx/(len(triangle_sizes)-1)
+                    color_g = 1.0 - (o_idx/(len(output_resolutions)-1))
+                    color_b = o_idx/(len(output_resolutions)-1)
+                    luminance = 0.2126*color_r + 0.7152*color_g + 0.0722*color_b
+                    target_max_luminance = 0.5
+                    if luminance > target_max_luminance:
+                        color_r *= target_max_luminance/luminance
+                        color_g *= target_max_luminance/luminance
+                        color_b *= target_max_luminance/luminance
+                    ax[h][r].plot(y_data, label=f"{o}x{o}, size={s}", color=(color_r, color_g, color_b), marker=markers[s_idx%len(markers)])
                     ax[h][r].set_xticks(list(range(len(x_data))))
                     ax[h][r].set_xticklabels(x_data.tolist())
                     ax[h][r].set_yscale("log")
                     if (r == len(raster_modes)-1) and (h == len(hom_enabled)-1):
-                        ax[h][r].legend(bbox_to_anchor=(1.1, 0.8))
-    fig.set_size_inches(20, 12)
+                        ax[h][r].legend(bbox_to_anchor=(1.65, 1.5))
+    fig.set_size_inches(24, 12)
     plt.suptitle(f"Swept Runs with {n} Triangles")
     plt.savefig(os.path.join("visualizations", f"plot_{n}.png"), bbox_inches="tight")
 
